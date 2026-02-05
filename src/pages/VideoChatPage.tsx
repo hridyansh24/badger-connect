@@ -101,14 +101,16 @@ const VideoChatPage = ({ user, onLeaveChat, onLogout }: VideoChatPageProps) => {
 
     const handlePaired = ({ mode, sessionId: incomingSession, partnerProfile }: MatchPairedPayload) => {
       if (mode !== 'video') return
+      const partnerName = partnerProfile?.name ?? 'Badger'
       setPartner({
-        name: partnerProfile?.name ?? 'Badger',
+        name: partnerName,
         email: partnerProfile?.email ?? 'unknown@wisc.edu',
         interest: partnerProfile?.interests?.[0] ?? 'campus life',
         tagline: partnerProfile?.bio ?? 'Verified UW student ready for a video chat.',
       })
       setSessionId(incomingSession)
       setStatus('connected')
+      setFeedbackNote(`Connected with ${partnerName.split(' ')[0]} via secure video.`)
     }
 
     const handlePartnerLeft = ({ sessionId: closingSession }: SimpleSessionPayload) => {

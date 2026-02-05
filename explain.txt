@@ -14,54 +14,78 @@ Key client features
    - Enlarged layout, same gradient background, optional interest messaging.
    - CTA cards for text/video; logout available here.
 3. Text chat (`src/pages/TextChatPage.tsx`)
-   - Simulated matching/partner data, session IDs, chat bubbles, composer, and camera/pill design.
-   - Reaction panel (like/dislike/report) drives a central reputation system that bans accounts at 3 reports or 10 dislikes.
-   - Profile card + match context + connection status pill.
+   - Live Socket.IO pairing when the backend is reachable; falls back to local simulation if the socket fails.
+   - Session IDs, chat bubbles, composer, real-time status indicator, and “connected with {name}” system messages.
 4. Video chat (`src/pages/VideoChatPage.tsx`)
-   - Real camera preview via `getUserMedia`, remote preview placeholder, and same reaction/profile UX as text chat.
+   - Real camera preview via `getUserMedia`, remote preview placeholder, and the same reaction/profile UX as text chat.
 5. Reputation + banned list
-   - `src/context/FeedbackContext.tsx` centralizes likes/dislikes/reports and spreads them across pages. Bans currently live in memory (reset on refresh) but the logic mirrors what the backend will enforce later.
+   - `src/context/FeedbackContext.tsx` centralizes likes/dislikes/reports with an auto-ban at 3 reports or 10 dislikes. Data is still in-memory client side but also syncs to the backend events.
 6. Interest filters
    - `useBannedInterests` fetches `public/banned-interests.txt` so you can add new blocked words without code changes.
 
 Realtime/WebSocket prep
 -----------------------
-- Installed `socket.io-client` and created `src/context/SocketContext.tsx`. It connects to `VITE_SOCKET_URL` (default `http://localhost:4000`) and exposes `status`, `error`, and a `send` helper.
-- Text and video chat pages emit events:
-  * `match:request` when searching for a partner.
-  * `match:paired` when a simulated partner is assigned.
-  * `chat:text:message` on every outbound text message.
-  * `chat:leave` when a user exits the chat.
-  * `profile:reaction` for likes/dislikes/reports with current totals.
-- Both pages show a “Realtime link” card so you can see if the socket is connected; once a backend is live, you can listen to these events and respond appropriately.
+- Installed `socket.io-client` and created `src/context/SocketContext.tsx`. It connects to `import.meta.env.VITE_SOCKET_URL` (default `http://localhost:4000`) and exposes `status`, `error`, and a `send` helper.
+- Chat pages emit/listen for:
+  * `profile:update` once the user logs in.
+  * `match:request`, `match:paired`, `match:queued` for matchmaking flows.
+  * `chat:text:message`, `chat:leave`, and `system:partner-left` for messaging lifecycle.
+  * `profile:reaction` to sync likes/dislikes/reports back to the backend so bans apply globally.
+- UI shows “Realtime link” so you always know whether the socket is connected.
 
-What still needs backend work
------------------------------
-1. Real authentication: integrate UW’s SSO/OAuth (NetID) so users verify identity server-side before hitting the app. The current login only validates on the client.
-2. Data persistence: set up a database/tables for profiles, interests, matches, reaction counts, and ban status. Sync `FeedbackContext` data to that backend so bans survive refreshes and apply globally.
-3. Matchmaking + chat/video signaling: build a Node/Express (or similar) server with Socket.IO/WebRTC. Handle events we already emit (`match:request`, `match:paired`, etc.), broadcast partner messages, and manage session lifecycles. Add TURN/STUN infrastructure for WebRTC video.
-4. Reporting enforcement: when the backend sees 3 reports or 10 dislikes (or manual admin action), flag the account as banned and prevent it from joining new chats. Update the frontend to consume that status via API/WS events.
-5. Deployment: host the frontend (Netlify/Vercel/GitHub Pages) and backend (Render/Fly/Heroku/etc.) with HTTPS so cameras/mics work. Configure `VITE_SOCKET_URL` to point at the deployed signaling server.
-6. Optional enhancements: persistent chat history, real-time typing indicators, queue status, admin dashboard for reports, notifications when a partner leaves, etc.
+Backend summary (backend/server.js)
+-----------------------------------
+- Express + Socket.IO server with CORS configuration via `CLIENT_ORIGIN`.
+- Keeps separate queues for text/video modes, pairs users when two are waiting, and emits `match:paired` with basic partner info.
+- Relays text messages between the two sockets within a session, handles disconnects, and broadcasts when a partner leaves.
+- Stores reputation / bans in-memory so reports/dislikes accumulate across sessions while the server runs.
+- REST endpoints: `/health` (queue stats) and `/reputation/:email` (current counts).
 
-Next steps / action plan
+How to run locally (single laptop)
+----------------------------------
+1. **Backend**
+   ```bash
+   cd backend
+   cat <<'EOF' > .env
+   PORT=4000
+   CLIENT_ORIGIN=http://localhost:5173
+   EOF
+   npm run dev
+   ```
+2. **Frontend**
+   ```bash
+   cd /Users/hridyanshsethi/badger_connect
+   cat <<'EOF' > .env
+   VITE_SOCKET_URL=http://localhost:4000
+   EOF
+   npm run dev
+   ```
+3. Visit `http://localhost:5173` in a browser; the “Realtime link” pill should show `connected` if the backend is running.
+
+How to host on your LAN (share with a friend on same Wi-Fi)
+-----------------------------------------------------------
+1. Update both env files to use your LAN IP (e.g., `10.140.23.4`).
+   - `backend/.env`
+     ```
+     PORT=4000
+     CLIENT_ORIGIN=http://localhost:5173,http://10.140.23.4:5173
+     ```
+   - `.env`
+     ```
+     VITE_SOCKET_URL=http://10.140.23.4:4000
+     ```
+2. Restart both servers:
+   - Backend: `cd backend && npm run dev`
+   - Frontend: `npm run dev -- --host 0.0.0.0`
+3. Share the `Network` URL Vite prints (e.g., `http://10.140.23.4:5173/`). Both browsers must be on the same Wi-Fi and on `/chat/text` at the same time to pair. Cameras require HTTPS or localhost.
+
+Deployment / next steps
 ------------------------
-1. Stand up a simple backend skeleton (Node + Express + Socket.IO).
-   - Define endpoints for login (backed by UW auth or temporary token).
-   - Implement in-memory data structures mirroring `FeedbackContext` so you can test report persistence.
-2. Wire the frontend to backend APIs.
-   - Replace the simulated partner selection with actual matchmaking responses from the server.
-   - Listen for server-emitted events (messages, partner join/leave) via the socket hook.
-3. Add persistent storage.
-   - Move from in-memory to a database (Postgres, Mongo, etc.) for profiles/interests/reactions.
-4. Harden bans + admin tools.
-   - Ensure banned users can’t log in or start sessions.
-   - Create a simple admin view/API to review reported users.
-5. Deploy everything.
-   - Configure `.env`/`VITE_SOCKET_URL` for production.
-   - Set up CI/CD so pushes rebuild the frontend and redeploy the backend.
-6. QA and polish.
-   - Test across browsers and networks (especially WebRTC camera/permissions).
-   - Gather feedback from a small cohort before sharing campus-wide.
+1. Harden authentication: hook up UW SSO or email verification server-side so the client login can’t be bypassed.
+2. Persist data: move reputation, interests, and session history to a real database (Postgres, MongoDB, etc.) so bans survive restarts.
+3. Real WebRTC signaling: extend the backend so video chat actually relays SDP/ICE candidates and uses TURN/STUN for media.
+4. Add admin tooling: API or dashboard to review reported profiles, manually unban, etc.
+5. Deploy front + back: push the frontend to Netlify/Vercel and the backend to a host (Render, Fly, EC2) with HTTPS. Update `VITE_SOCKET_URL` to the public backend URL.
+6. Testing & monitoring: add server logging, heartbeat pings, unit tests for queue logic, automated deployment scripts, etc.
 
-Keep this file handy as your checklist whenever you reopen the repo. Update it as you finish backend milestones or adjust the roadmap.
+Keep this file updated as you tackle the roadmap. The commands above are all you need to spin the project up again on localhost or over Wi-Fi.

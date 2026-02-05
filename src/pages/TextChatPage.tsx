@@ -170,13 +170,16 @@ const TextChatPage = ({ user, onLeaveChat, onLogout }: TextChatPageProps) => {
 
     const handlePaired = ({ mode, sessionId: incomingSession, partnerProfile }: MatchPairedPayload) => {
       if (mode !== 'text') return
+      const partnerName = partnerProfile?.name ?? 'Badger'
       setPartner({
-        name: partnerProfile?.name ?? 'Badger',
+        name: partnerName,
         email: partnerProfile?.email ?? 'unknown@wisc.edu',
         interest: partnerProfile?.interests?.[0],
         bio: partnerProfile?.bio ?? 'Verified UW–Madison student.',
       })
-      setMessages([])
+      setMessages([
+        createMessage('partner', `Connected with ${partnerName.split(' ')[0]}! Say hi.`),
+      ])
       setStatus('connected')
       setSessionId(incomingSession)
     }
@@ -189,6 +192,7 @@ const TextChatPage = ({ user, onLeaveChat, onLogout }: TextChatPageProps) => {
     }: TextMessagePayload) => {
       if (incomingSession !== sessionRef.current) return
       const author: ChatMessage['author'] = from === user.email ? 'user' : 'partner'
+      setStatus('connected')
       setMessages((current) => [...current, createMessage(author, body, timestamp)])
     }
 
