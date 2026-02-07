@@ -35,8 +35,8 @@ badger_connect/
 ## Quick start (localhost)
 1. **Install dependencies**
    ```bash
-   npm install                # frontend
-   cd backend && npm install  # backend
+   npm install                # for frontend
+   cd backend && npm install  # for backend
    ```
 2. **Environment files**
    ```bash
