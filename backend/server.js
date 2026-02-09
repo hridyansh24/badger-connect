@@ -178,6 +178,21 @@ io.on('connection', (socket) => {
     }
   })
 
+  socket.on('webrtc:offer', ({ sessionId, description }) => {
+    if (!sessionId || !description) return
+    relayToSessionPeer(sessionId, socket.id, 'webrtc:offer', { sessionId, description })
+  })
+
+  socket.on('webrtc:answer', ({ sessionId, description }) => {
+    if (!sessionId || !description) return
+    relayToSessionPeer(sessionId, socket.id, 'webrtc:answer', { sessionId, description })
+  })
+
+  socket.on('webrtc:ice-candidate', ({ sessionId, candidate }) => {
+    if (!sessionId || typeof candidate === 'undefined') return
+    relayToSessionPeer(sessionId, socket.id, 'webrtc:ice-candidate', { sessionId, candidate })
+  })
+
   socket.on('disconnect', () => {
     removeFromQueues(socket.id)
     const existing = findSessionBySocket(socket.id)
@@ -211,11 +226,13 @@ function attemptPair(mode) {
       sessionId,
       mode,
       partnerProfile: profileA,
+      initiator: true,
     })
     secondSocket.emit('match:paired', {
       sessionId,
       mode,
       partnerProfile: profileB,
+      initiator: false,
     })
   }
 }
@@ -233,6 +250,15 @@ function endSession(sessionId, leaverId) {
       participantSocket.emit('system:partner-left', { sessionId })
     }
   })
+}
+
+function relayToSessionPeer(sessionId, senderId, event, payload) {
+  const session = sessions.get(sessionId)
+  if (!session) return
+  if (!session.participants.includes(senderId)) return
+  const targetId = session.participants.find((id) => id !== senderId)
+  if (!targetId) return
+  io.to(targetId).emit(event, payload)
 }
 
 httpServer.listen(PORT, () => {

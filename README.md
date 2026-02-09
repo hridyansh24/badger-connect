@@ -80,7 +80,7 @@ When sharing over LAN, restart Vite with `npm run dev -- --host 0.0.0.0` and upd
 ## Moderation + customization
 - Update `public/banned-interests.txt` to add/remove forbidden interest keywords. The file is loaded at runtime, so edits go live after a refresh.
 - Reaction thresholds live in both `src/context/FeedbackContext.tsx` and `backend/server.js`. Keep them consistent (default: 3 reports or 10 dislikes ban an email).
-- The Socket.IO events currently cover profile updates, matchmaking, text messaging, session teardown, and reaction syncing. Extend these if you add WebRTC signaling (SDP/ICE) for real video streaming.
+- Socket.IO now relays the WebRTC signaling (`webrtc:offer`, `webrtc:answer`, `webrtc:ice-candidate`) so browsers can create peer-to-peer video sessions. Update `RTC_CONFIGURATION` in `src/pages/VideoChatPage.tsx` with your STUN/TURN servers before going to production.
 
 ## Deployment checklist
 1. Deploy the backend (Render, Fly, Railway, EC2, etc.) and expose HTTPS + WebSocket support.

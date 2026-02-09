@@ -83,7 +83,7 @@ Deployment / next steps
 ------------------------
 1. Harden authentication: hook up UW SSO or email verification server-side so the client login can’t be bypassed.
 2. Persist data: move reputation, interests, and session history to a real database (Postgres, MongoDB, etc.) so bans survive restarts.
-3. Real WebRTC signaling: extend the backend so video chat actually relays SDP/ICE candidates and uses TURN/STUN for media.
+3. Harden WebRTC signaling: the backend now relays SDP/ICE via Socket.IO, so layer in TURN/STUN (e.g., coturn) plus monitoring to keep video stable across campus firewalls.
 4. Add admin tooling: API or dashboard to review reported profiles, manually unban, etc.
 5. Deploy front + back: push the frontend to Netlify/Vercel and the backend to a host (Render, Fly, EC2) with HTTPS. Update `VITE_SOCKET_URL` to the public backend URL.
 6. Testing & monitoring: add server logging, heartbeat pings, unit tests for queue logic, automated deployment scripts, etc.

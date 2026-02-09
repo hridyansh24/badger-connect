@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { UserProfile } from '../types'
 import { useFeedback, type ReactionType } from '../context/FeedbackContext'
@@ -20,6 +20,7 @@ type VideoPartner = {
 type MatchPairedPayload = {
   mode: 'text' | 'video'
   sessionId: string
+  initiator?: boolean
   partnerProfile?: {
     name?: string
     email?: string
@@ -30,6 +31,16 @@ type MatchPairedPayload = {
 
 type SimpleSessionPayload = {
   sessionId: string
+}
+
+type WebRtcDescriptionPayload = {
+  sessionId: string
+  description: RTCSessionDescriptionInit
+}
+
+type WebRtcCandidatePayload = {
+  sessionId: string
+  candidate: RTCIceCandidateInit | null
 }
 
 const partnerProfiles: VideoPartner[] = [
@@ -60,6 +71,9 @@ const partnerProfiles: VideoPartner[] = [
 ]
 
 const createVideoSessionId = () => `VC-${Math.floor(Math.random() * 9999).toString().padStart(4, '0')}`
+const RTC_CONFIGURATION: RTCConfiguration = {
+  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+}
 
 const VideoChatPage = ({ user, onLeaveChat, onLogout }: VideoChatPageProps) => {
   const navigate = useNavigate()
@@ -71,13 +85,162 @@ const VideoChatPage = ({ user, onLeaveChat, onLogout }: VideoChatPageProps) => {
   const [screenEnabled, setScreenEnabled] = useState(false)
   const [cameraError, setCameraError] = useState('')
   const localVideoRef = useRef<HTMLVideoElement | null>(null)
+  const remoteVideoRef = useRef<HTMLVideoElement | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
+  const screenStreamRef = useRef<MediaStream | null>(null)
+  const peerConnectionRef = useRef<RTCPeerConnection | null>(null)
+  const sessionIdRef = useRef(sessionId)
+  const cameraEnabledRef = useRef(cameraEnabled)
   const { recordReaction, getReputationFor, REPORT_THRESHOLD, DISLIKE_THRESHOLD } = useFeedback()
   const [reaction, setReaction] = useState<ReactionType | null>(null)
   const [feedbackNote, setFeedbackNote] = useState('')
+  const [shouldInitiateCall, setShouldInitiateCall] = useState(false)
+  const [webrtcStatus, setWebrtcStatus] = useState<'idle' | 'connecting' | 'connected' | 'error'>('idle')
+  const [remoteVideoActive, setRemoteVideoActive] = useState(false)
   const reputation = getReputationFor(partner?.email ?? '')
   const { socket, status: socketStatus, error: socketError, send: sendSocket } = useSocket()
   const realtimeReady = socketStatus === 'connected' && !!socket
+
+  useEffect(() => {
+    sessionIdRef.current = sessionId
+  }, [sessionId])
+
+  useEffect(() => {
+    cameraEnabledRef.current = cameraEnabled
+  }, [cameraEnabled])
+
+  const stopStreamTracks = (stream: MediaStream | null) => {
+    stream?.getTracks().forEach((track) => track.stop())
+  }
+
+  const setLocalPreviewStream = useCallback((stream: MediaStream | null) => {
+    if (!localVideoRef.current) return
+    localVideoRef.current.srcObject = stream
+    if (stream) {
+      void localVideoRef.current.play().catch(() => {
+        /* autoplay block ignored */
+      })
+    }
+  }, [])
+
+  const attachTracksToPeerConnection = useCallback(() => {
+    const pc = peerConnectionRef.current
+    if (!pc) return
+    const senders = pc.getSenders()
+    const audioStream = streamRef.current
+    const audioTrack = audioStream?.getAudioTracks()[0]
+    if (audioTrack && audioStream) {
+      const existingAudio = senders.find((sender) => sender.track?.kind === 'audio')
+      if (existingAudio) {
+        void existingAudio.replaceTrack(audioTrack)
+      } else {
+        pc.addTrack(audioTrack, audioStream)
+      }
+    }
+
+    const activeVideoStream = screenStreamRef.current ?? streamRef.current
+    const videoTrack = activeVideoStream?.getVideoTracks()[0]
+    if (videoTrack && activeVideoStream) {
+      const existingVideo = senders.find((sender) => sender.track?.kind === 'video')
+      if (existingVideo) {
+        void existingVideo.replaceTrack(videoTrack)
+      } else {
+        pc.addTrack(videoTrack, activeVideoStream)
+      }
+    }
+  }, [])
+
+  const cleanupPeerConnection = useCallback(
+    (options: { resetState?: boolean } = { resetState: true }) => {
+      if (peerConnectionRef.current) {
+        peerConnectionRef.current.onicecandidate = null
+        peerConnectionRef.current.ontrack = null
+        peerConnectionRef.current.onconnectionstatechange = null
+        peerConnectionRef.current.close()
+        peerConnectionRef.current = null
+      }
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = null
+      }
+      if (options.resetState) {
+        setRemoteVideoActive(false)
+        setWebrtcStatus('idle')
+        setShouldInitiateCall(false)
+      }
+    },
+    [],
+  )
+
+  const ensurePeerConnection = useCallback(() => {
+    if (!sessionIdRef.current || !socket) return null
+    if (peerConnectionRef.current) return peerConnectionRef.current
+    const pc = new RTCPeerConnection(RTC_CONFIGURATION)
+    peerConnectionRef.current = pc
+    setWebrtcStatus('connecting')
+    attachTracksToPeerConnection()
+
+    pc.onicecandidate = (event) => {
+      const activeSession = sessionIdRef.current
+      if (!activeSession) return
+      sendSocket('webrtc:ice-candidate', {
+        sessionId: activeSession,
+        candidate: event.candidate ?? null,
+      })
+    }
+
+    pc.ontrack = (event) => {
+      const [remoteStream] = event.streams
+      if (!remoteStream || !remoteVideoRef.current) return
+      remoteVideoRef.current.srcObject = remoteStream
+      setRemoteVideoActive(true)
+      void remoteVideoRef.current
+        .play()
+        .catch(() => {
+          /* ignore autoplay failures */
+        })
+    }
+
+    pc.onconnectionstatechange = () => {
+      if (!peerConnectionRef.current) return
+      switch (peerConnectionRef.current.connectionState) {
+        case 'connected':
+          setWebrtcStatus('connected')
+          break
+        case 'failed':
+        case 'disconnected':
+          setWebrtcStatus('error')
+          break
+        case 'closed':
+          setWebrtcStatus('idle')
+          setRemoteVideoActive(false)
+          break
+        default:
+          break
+      }
+    }
+
+    return pc
+  }, [attachTracksToPeerConnection, sendSocket, socket])
+
+  const stopScreenShare = useCallback(() => {
+    if (!screenStreamRef.current) return
+    stopStreamTracks(screenStreamRef.current)
+    screenStreamRef.current = null
+    attachTracksToPeerConnection()
+    if (cameraEnabledRef.current && streamRef.current) {
+      setLocalPreviewStream(streamRef.current)
+    } else if (!cameraEnabledRef.current) {
+      setLocalPreviewStream(null)
+    }
+  }, [attachTracksToPeerConnection, setLocalPreviewStream])
+
+  const stopLocalStream = useCallback(() => {
+    if (streamRef.current) {
+      stopStreamTracks(streamRef.current)
+      streamRef.current = null
+    }
+    setLocalPreviewStream(null)
+  }, [setLocalPreviewStream])
 
   useEffect(() => {
     if (!realtimeReady) {
@@ -99,9 +262,10 @@ const VideoChatPage = ({ user, onLeaveChat, onLogout }: VideoChatPageProps) => {
   useEffect(() => {
     if (!socket) return
 
-    const handlePaired = ({ mode, sessionId: incomingSession, partnerProfile }: MatchPairedPayload) => {
+    const handlePaired = ({ mode, sessionId: incomingSession, partnerProfile, initiator }: MatchPairedPayload) => {
       if (mode !== 'video') return
       const partnerName = partnerProfile?.name ?? 'Badger'
+      cleanupPeerConnection()
       setPartner({
         name: partnerName,
         email: partnerProfile?.email ?? 'unknown@wisc.edu',
@@ -109,85 +273,229 @@ const VideoChatPage = ({ user, onLeaveChat, onLogout }: VideoChatPageProps) => {
         tagline: partnerProfile?.bio ?? 'Verified UW student ready for a video chat.',
       })
       setSessionId(incomingSession)
+      sessionIdRef.current = incomingSession
       setStatus('connected')
       setFeedbackNote(`Connected with ${partnerName.split(' ')[0]} via secure video.`)
+      setScreenEnabled(false)
+      setShouldInitiateCall(Boolean(initiator))
+      setRemoteVideoActive(false)
+      setWebrtcStatus('connecting')
+      ensurePeerConnection()
     }
 
     const handlePartnerLeft = ({ sessionId: closingSession }: SimpleSessionPayload) => {
-      if (closingSession !== sessionId) return
+      if (!closingSession || closingSession !== sessionIdRef.current) return
       setStatus('matching')
       setPartner(null)
       setFeedbackNote('Your partner left the video chat.')
+      setScreenEnabled(false)
+      cleanupPeerConnection()
+    }
+
+    const handleOffer = async ({ sessionId: incomingSession, description }: WebRtcDescriptionPayload) => {
+      if (!incomingSession || incomingSession !== sessionIdRef.current) return
+      const pc = ensurePeerConnection()
+      if (!pc) return
+      try {
+        await pc.setRemoteDescription(description)
+        const answer = await pc.createAnswer()
+        await pc.setLocalDescription(answer)
+        sendSocket('webrtc:answer', { sessionId: incomingSession, description: answer })
+      } catch (error) {
+        console.error('Failed to handle offer', error)
+        setWebrtcStatus('error')
+      }
+    }
+
+    const handleAnswer = async ({ sessionId: incomingSession, description }: WebRtcDescriptionPayload) => {
+      if (!incomingSession || incomingSession !== sessionIdRef.current) return
+      const pc = ensurePeerConnection()
+      if (!pc) return
+      try {
+        await pc.setRemoteDescription(description)
+      } catch (error) {
+        console.error('Failed to handle answer', error)
+        setWebrtcStatus('error')
+      }
+    }
+
+    const handleIceCandidate = async ({ sessionId: incomingSession, candidate }: WebRtcCandidatePayload) => {
+      if (!incomingSession || incomingSession !== sessionIdRef.current) return
+      const pc = ensurePeerConnection()
+      if (!pc) return
+      try {
+        await pc.addIceCandidate(candidate)
+      } catch (error) {
+        console.error('Failed to add ICE candidate', error)
+      }
     }
 
     socket.on('match:paired', handlePaired)
     socket.on('system:partner-left', handlePartnerLeft)
     socket.on('system:session-ended', handlePartnerLeft)
+    socket.on('webrtc:offer', handleOffer)
+    socket.on('webrtc:answer', handleAnswer)
+    socket.on('webrtc:ice-candidate', handleIceCandidate)
 
     return () => {
       socket.off('match:paired', handlePaired)
       socket.off('system:partner-left', handlePartnerLeft)
       socket.off('system:session-ended', handlePartnerLeft)
+      socket.off('webrtc:offer', handleOffer)
+      socket.off('webrtc:answer', handleAnswer)
+      socket.off('webrtc:ice-candidate', handleIceCandidate)
     }
-  }, [socket, sessionId])
-
-  const stopLocalStream = () => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop())
-      streamRef.current = null
-    }
-    if (localVideoRef.current) {
-      localVideoRef.current.srcObject = null
-    }
-  }
+  }, [cleanupPeerConnection, ensurePeerConnection, sendSocket, socket])
 
   useEffect(() => {
-    let cancelled = false
+    if (!shouldInitiateCall || status !== 'connected' || !sessionId) return
+    const startOffer = async () => {
+      const pc = ensurePeerConnection()
+      if (!pc) return
+      try {
+        const offer = await pc.createOffer()
+        await pc.setLocalDescription(offer)
+        sendSocket('webrtc:offer', { sessionId, description: offer })
+      } catch (error) {
+        console.error('Failed to create offer', error)
+        setWebrtcStatus('error')
+      }
+    }
+    void startOffer()
+  }, [ensurePeerConnection, sendSocket, sessionId, shouldInitiateCall, status])
 
-    if (cameraEnabled) {
+  useEffect(() => {
+    if (!cameraEnabled) return
+    if (streamRef.current) {
+      if (!screenEnabled) {
+        setLocalPreviewStream(streamRef.current)
+      }
+      attachTracksToPeerConnection()
+      return
+    }
+
+    let cancelled = false
+    const startMedia = async () => {
       setCameraError('')
       if (!navigator.mediaDevices?.getUserMedia) {
         setCameraError('Camera access is not supported in this browser.')
         setCameraEnabled(false)
         return
       }
-
-      navigator.mediaDevices
-        .getUserMedia({ video: true })
-        .then((stream) => {
-          if (cancelled) {
-            stream.getTracks().forEach((track) => track.stop())
-            return
-          }
-          streamRef.current = stream
-          if (localVideoRef.current) {
-            localVideoRef.current.srcObject = stream
-            void localVideoRef.current.play().catch(() => {
-              /* ignore auto play issues */
-            })
-          }
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+        if (cancelled) {
+          stopStreamTracks(stream)
+          return
+        }
+        streamRef.current = stream
+        stream.getAudioTracks().forEach((track) => {
+          track.enabled = micEnabled
         })
-        .catch((error) => {
-          console.error(error)
-          if (!cancelled) {
-            setCameraError('Unable to access your camera. Please allow permissions and try again.')
-            setCameraEnabled(false)
-          }
+        stream.getVideoTracks().forEach((track) => {
+          track.enabled = true
         })
-    } else {
-      stopLocalStream()
+        if (!screenEnabled) {
+          setLocalPreviewStream(stream)
+        }
+        attachTracksToPeerConnection()
+      } catch (error) {
+        console.error(error)
+        if (!cancelled) {
+          setCameraError('Unable to access your camera. Please allow permissions and try again.')
+          setCameraEnabled(false)
+        }
+      }
     }
+
+    void startMedia()
 
     return () => {
       cancelled = true
-      stopLocalStream()
     }
-  }, [cameraEnabled])
+  }, [attachTracksToPeerConnection, cameraEnabled, micEnabled, screenEnabled, setLocalPreviewStream])
+
+  useEffect(() => {
+    if (screenEnabled) return
+    const stream = streamRef.current
+    if (!stream) {
+      if (!cameraEnabled) {
+        setLocalPreviewStream(null)
+      }
+      return
+    }
+    stream.getVideoTracks().forEach((track) => {
+      track.enabled = cameraEnabled
+    })
+    setLocalPreviewStream(cameraEnabled ? stream : null)
+  }, [cameraEnabled, screenEnabled, setLocalPreviewStream])
+
+  useEffect(() => {
+    const stream = streamRef.current
+    if (!stream) return
+    stream.getAudioTracks().forEach((track) => {
+      track.enabled = micEnabled
+    })
+  }, [micEnabled])
+
+  useEffect(() => {
+    if (!screenEnabled) {
+      stopScreenShare()
+      return
+    }
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      setFeedbackNote('Screen sharing is not supported in this browser.')
+      setScreenEnabled(false)
+      return
+    }
+
+    let cancelled = false
+    const startShare = async () => {
+      try {
+        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true })
+        if (cancelled) {
+          stopStreamTracks(screenStream)
+          return
+        }
+        screenStreamRef.current = screenStream
+        const [screenTrack] = screenStream.getVideoTracks()
+        if (screenTrack) {
+          screenTrack.onended = () => setScreenEnabled(false)
+        }
+        setLocalPreviewStream(screenStream)
+        attachTracksToPeerConnection()
+      } catch (error) {
+        console.error('Screen share failed', error)
+        if (!cancelled) {
+          setScreenEnabled(false)
+          setFeedbackNote('Screen sharing failed. Please allow permissions and try again.')
+        }
+      }
+    }
+
+    void startShare()
+
+    return () => {
+      cancelled = true
+    }
+  }, [attachTracksToPeerConnection, screenEnabled, setFeedbackNote, setLocalPreviewStream, stopScreenShare])
+
+  useEffect(() => {
+    return () => {
+      stopScreenShare()
+      stopLocalStream()
+      cleanupPeerConnection({ resetState: false })
+    }
+  }, [cleanupPeerConnection, stopLocalStream, stopScreenShare])
 
   const leaveChat = () => {
     if (realtimeReady && sessionId) {
       sendSocket('chat:leave', { sessionId, user: user.email, mode: 'video' })
     }
+    setScreenEnabled(false)
+    stopScreenShare()
+    cleanupPeerConnection()
+    stopLocalStream()
     onLeaveChat()
     navigate('/mode')
   }
@@ -226,6 +534,19 @@ const VideoChatPage = ({ user, onLeaveChat, onLogout }: VideoChatPageProps) => {
     }
   }
 
+  const remoteNameLabel =
+    status === 'matching' ? 'Pairing you…' : (partner?.name ?? 'Partner')
+  const remoteStatusLabel =
+    status === 'matching'
+      ? 'Encrypted connection'
+      : webrtcStatus === 'connected'
+        ? 'Live now'
+        : webrtcStatus === 'error'
+          ? 'Reconnecting…'
+          : 'Negotiating…'
+  const localStatusLabel = cameraError || (screenEnabled ? 'Sharing screen' : cameraEnabled ? 'Camera on' : 'Camera paused')
+  const localVideoVisible = screenEnabled || (cameraEnabled && !cameraError)
+
   return (
     <div className="page chat-page">
       <div className="page-card video-card">
@@ -257,22 +578,28 @@ const VideoChatPage = ({ user, onLeaveChat, onLogout }: VideoChatPageProps) => {
 
         <div className="video-stage">
           <div className={`video-remote ${status}`}>
+            <video
+              ref={remoteVideoRef}
+              autoPlay
+              playsInline
+              className={remoteVideoActive ? 'video-feed visible' : 'video-feed'}
+            />
             <div className="video-overlay">
-              <p>{status === 'matching' ? 'Pairing you…' : partner?.name ?? 'Partner'}</p>
-              <span>{status === 'matching' ? 'Encrypted connection' : 'Live now'}</span>
+              <p>{remoteNameLabel}</p>
+              <span>{remoteStatusLabel}</span>
             </div>
           </div>
-          <div className={`video-self ${cameraEnabled ? 'active' : 'muted'}`}>
+          <div className={`video-self ${cameraEnabled || screenEnabled ? 'active' : 'muted'}`}>
             <video
               ref={localVideoRef}
               autoPlay
               muted
               playsInline
-              className={cameraEnabled && !cameraError ? 'video-feed visible' : 'video-feed'}
+              className={localVideoVisible ? 'video-feed visible' : 'video-feed'}
             />
             <div className="video-overlay">
               <p>{user.name}</p>
-              <span>{cameraError || (cameraEnabled ? 'Camera on' : 'Camera paused')}</span>
+              <span>{localStatusLabel}</span>
             </div>
           </div>
         </div>
