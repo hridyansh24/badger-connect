@@ -209,11 +209,32 @@ const TextChatPage = ({ user, onLeaveChat, onLogout }: TextChatPageProps) => {
       }
     }
 
+    const handleWarning = (payload: { message?: string; severity?: string }) => {
+      if (!payload?.message) return
+      setMessages((current) => [
+        ...current,
+        createMessage('partner', `⚠️ ${payload.message}`),
+      ])
+    }
+
+    const handleBanned = () => {
+      setMessages((current) => [
+        ...current,
+        createMessage(
+          'partner',
+          '⛔ Your account has been banned from Badger Connect for violating the community guidelines.',
+        ),
+      ])
+      setStatus('matching')
+    }
+
     socket.on('match:paired', handlePaired)
     socket.on('chat:text:message', handleIncomingMessage)
     socket.on('system:partner-left', handlePartnerLeft)
     socket.on('system:session-ended', handlePartnerLeft)
     socket.on('match:queued', handleQueued)
+    socket.on('system:warning', handleWarning)
+    socket.on('system:banned', handleBanned)
 
     return () => {
       socket.off('match:paired', handlePaired)
@@ -221,6 +242,8 @@ const TextChatPage = ({ user, onLeaveChat, onLogout }: TextChatPageProps) => {
       socket.off('system:partner-left', handlePartnerLeft)
       socket.off('system:session-ended', handlePartnerLeft)
       socket.off('match:queued', handleQueued)
+      socket.off('system:warning', handleWarning)
+      socket.off('system:banned', handleBanned)
     }
   }, [socket, user.email])
 

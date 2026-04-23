@@ -35,28 +35,44 @@ badger_connect/
 ## Quick start (localhost)
 1. **Install dependencies**
    ```bash
-   npm install                # for frontend
-   cd backend && npm install  # for backend
+   npm install                # frontend
+   cd backend && npm install  # backend
    ```
 2. **Environment files**
    ```bash
-   # /.env
+   # /.env  (frontend)
    VITE_SOCKET_URL=http://localhost:4000
+   VITE_API_URL=http://localhost:4000
+   VITE_SUPABASE_URL=https://<project-ref>.supabase.co
+   VITE_SUPABASE_ANON_KEY=<anon or sb_publishable_... key>
 
    # backend/.env
    PORT=4000
    CLIENT_ORIGIN=http://localhost:5173
+   JWT_SECRET=<run: openssl rand -hex 32>
+   RESEND_API_KEY=<re_... from resend.com/api-keys>
+   RESEND_FROM=onboarding@resend.dev
+   SUPABASE_URL=https://<project-ref>.supabase.co
+   SUPABASE_SERVICE_ROLE_KEY=<service_role or sb_secret_... key>
    ```
-3. **Run the backend**
+3. **Apply the Supabase schema** — open your project's SQL Editor, paste the contents of `backend/supabase/schema.sql`, run once.
+4. **Run the backend**
    ```bash
    cd backend
    npm run dev
    ```
-4. **Run the frontend**
+5. **Run the frontend**
    ```bash
    npm run dev
    ```
-5. Visit `http://localhost:5173`. When the socket connects you’ll see “Realtime link: connected” in both chat pages. Open two browser windows (or share the LAN URL) to see real matchmaking.
+6. Visit `http://localhost:5173`. You'll go through **login → email OTP → mode select → chat**. Open two browsers logged in as two different `@wisc.edu` emails to see real matchmaking.
+
+## Auth flow
+1. User enters name + `@wisc.edu` email on `/`.
+2. Backend generates a 6-digit code, stores a bcrypt hash in Supabase, and emails the plaintext code via Resend (10-min expiry, max 5 attempts).
+3. User enters the code on `/verify`. Backend validates and issues a 7-day JWT.
+4. Frontend stores the JWT in `localStorage` and attaches it on the Socket.IO handshake.
+5. Socket.IO middleware rejects any connection without a valid token — the server's email identity is the JWT claim, not whatever the client says.
 
 ## Scripts
 | Location | Command | Purpose |
@@ -71,28 +87,42 @@ badger_connect/
 ## Environment variables
 | File | Variable | Description |
 | --- | --- | --- |
-| `.env` | `VITE_SOCKET_URL` | Base URL of the Socket.IO backend (`http://localhost:4000` locally, or your deployed origin) |
+| `.env` | `VITE_SOCKET_URL` | Base URL of the Socket.IO backend (`http://localhost:4000` locally) |
+| `.env` | `VITE_API_URL` | Base URL of the REST API — same host as the Socket.IO server |
+| `.env` | `VITE_SUPABASE_URL` | Supabase project URL |
+| `.env` | `VITE_SUPABASE_ANON_KEY` | Supabase public (`anon` / `sb_publishable_…`) key |
 | `backend/.env` | `PORT` | Port the Express server listens on (default `4000`) |
-| `backend/.env` | `CLIENT_ORIGIN` | Comma-separated list of allowed origins for CORS / Socket.IO (e.g., `http://localhost:5173,http://10.0.0.42:5173`) |
+| `backend/.env` | `CLIENT_ORIGIN` | Comma-separated list of allowed origins for CORS / Socket.IO |
+| `backend/.env` | `JWT_SECRET` | Secret used to sign session JWTs — generate with `openssl rand -hex 32` |
+| `backend/.env` | `RESEND_API_KEY` | Resend API key used to send OTP emails |
+| `backend/.env` | `RESEND_FROM` | From-address for OTP emails (default `onboarding@resend.dev` for dev) |
+| `backend/.env` | `SUPABASE_URL` | Supabase project URL |
+| `backend/.env` | `SUPABASE_SERVICE_ROLE_KEY` | Supabase secret (`service_role` / `sb_secret_…`) key — never expose to the browser |
 
-When sharing over LAN, restart Vite with `npm run dev -- --host 0.0.0.0` and update both env files so `CLIENT_ORIGIN` and `VITE_SOCKET_URL` use your machine’s IP.
+When sharing over LAN, restart Vite with `npm run dev -- --host 0.0.0.0` and update both env files so `CLIENT_ORIGIN`, `VITE_SOCKET_URL`, and `VITE_API_URL` use your machine's IP.
 
 ## Moderation + customization
 - Update `public/banned-interests.txt` to add/remove forbidden interest keywords. The file is loaded at runtime, so edits go live after a refresh.
 - Reaction thresholds live in both `src/context/FeedbackContext.tsx` and `backend/server.js`. Keep them consistent (default: 3 reports or 10 dislikes ban an email).
 - Socket.IO now relays the WebRTC signaling (`webrtc:offer`, `webrtc:answer`, `webrtc:ice-candidate`) so browsers can create peer-to-peer video sessions. Update `RTC_CONFIGURATION` in `src/pages/VideoChatPage.tsx` with your STUN/TURN servers before going to production.
 
-## Deployment checklist
-1. Deploy the backend (Render, Fly, Railway, EC2, etc.) and expose HTTPS + WebSocket support.
-2. Set `CLIENT_ORIGIN` to your frontend domain(s) and redeploy the backend.
-3. Deploy the frontend (Netlify/Vercel/Static hosting) and set `VITE_SOCKET_URL` to the backend URL.
-4. Enforce HTTPS for video (browsers block camera access on unsecured origins).
-5. Add persistence (Postgres/Mongo) before expecting bans or queues to survive restarts.
+## Deployment checklist (for a real UW–Madison launch)
+1. **Backend** → Render or Fly.io (needs always-on + WebSocket support, so avoid Vercel/Netlify serverless).
+   - Set every `backend/.env` variable in the host's environment panel.
+   - `CLIENT_ORIGIN` must list your actual frontend domain(s).
+2. **Frontend** → Vercel or Netlify. Set `VITE_SOCKET_URL`, `VITE_API_URL`, `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` in the host's env panel.
+3. **Domain** → Buy one (~$12/yr on Namecheap or Cloudflare). Avoid anything using "UW" or "Wisconsin" or the crest — that's a trademark issue with UW–Madison's licensing office. Use a badger-themed mark you own.
+4. **Resend** → verify a domain you control, then set `RESEND_FROM=hi@yourdomain.tld` in `backend/.env`. `onboarding@resend.dev` is dev-only.
+5. **TURN** → add a TURN server (Metered.ca free tier or Twilio) and update `RTC_CONFIGURATION` in `src/pages/VideoChatPage.tsx`. STUN alone fails behind many campus/corporate NATs.
+6. **HTTPS** → required for `getUserMedia` (camera). Both Vercel and Render terminate TLS automatically.
+7. **Growth** → r/udub, UW Discord servers, dorm group chats, flyers in Memorial Union and College Library. Do **not** imply official UW affiliation.
 
 ## Troubleshooting
-- **Realtime link stuck on “connecting”**: confirm the backend server is running, ports align with `VITE_SOCKET_URL`, and CORS permits your origin.
-- **Camera preview doesn’t show**: browsers require HTTPS or localhost. Grant camera permissions or toggle the “Turn camera on” control.
-- **No matches**: both browsers must be inside the same mode. Check `/health` on the backend to confirm queue counts.
-- **Bans not sticking**: the in-memory reputation resets when either server restarts. Hook up a database or Redis for persistence.
+- **OTP email never arrives**: check the backend logs for a `resend:send` error. With `onboarding@resend.dev`, Resend only allows sending to the email address that owns the Resend account — verify your own domain to send to anyone else.
+- **"Missing auth token" on socket connect**: the frontend has no JWT. Clear `localStorage` and log in again, or check that `/auth/verify-code` is actually returning a token.
+- **Realtime link stuck on "connecting"**: confirm the backend is running, `VITE_SOCKET_URL` matches, and `CLIENT_ORIGIN` on the backend permits your origin.
+- **Camera preview doesn't show**: browsers require HTTPS or localhost. Grant camera permissions or toggle "Turn camera on".
+- **No matches**: both browsers must be inside the same mode. Hit `GET /health` to confirm queue counts.
+- **Supabase errors on boot**: run the migration in `backend/supabase/schema.sql` inside the project's SQL Editor.
 
 Enjoy the lounge, and keep making Badger Connect more welcoming with every iteration.

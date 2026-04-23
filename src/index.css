@@ -1,18 +1,63 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
 :root {
-  font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
-  line-height: 1.5;
+  --font-sans: 'Inter', 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-display: 'Space Grotesk', 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Neon brand palette */
+  --badger-red: #ff2340;
+  --badger-red-deep: #c5050c;
+  --badger-red-dark: #8a0408;
+  --badger-red-glow: rgba(255, 35, 64, 0.55);
+  --badger-gold: #ffcc33;
+  --badger-gold-soft: #ffe186;
+  --badger-violet: #8a2bff;
+
+  /* Cosmic neutrals */
+  --ink-0: #03000a;
+  --ink-1: #08020e;
+  --ink-2: #10040f;
+  --text: #f5f2ef;
+  --text-muted: rgba(245, 242, 239, 0.65);
+  --text-faint: rgba(245, 242, 239, 0.4);
+
+  /* Glass */
+  --glass: rgba(255, 255, 255, 0.035);
+  --glass-strong: rgba(255, 255, 255, 0.07);
+  --glass-border: rgba(255, 255, 255, 0.09);
+  --glass-border-bright: rgba(255, 255, 255, 0.2);
+  --edge-red: rgba(255, 35, 64, 0.35);
+
+  --radius-xs: 10px;
+  --radius-sm: 14px;
+  --radius: 20px;
+  --radius-lg: 28px;
+  --radius-xl: 36px;
+
+  --shadow-neon-red: 0 0 0 1px rgba(255, 35, 64, 0.25),
+                     0 10px 30px rgba(255, 35, 64, 0.18),
+                     0 30px 80px rgba(255, 35, 64, 0.12);
+  --shadow-neon-gold: 0 0 0 1px rgba(255, 204, 51, 0.28),
+                      0 10px 28px rgba(255, 204, 51, 0.22);
+  --shadow-glass: 0 20px 60px -15px rgba(0, 0, 0, 0.55),
+                  inset 0 1px 0 rgba(255, 255, 255, 0.06);
+
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-smooth: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.55;
   font-weight: 400;
-  color: #201a1b;
-  background-color: #fdfbfb;
-  --badger-red: #c5050c;
-  --badger-red-dark: #950009;
-  --badger-rose: #fde7ea;
-  --badger-gray: #5f5b62;
-  --surface: #ffffff;
-  --shadow: 0 20px 60px rgba(180, 15, 24, 0.1);
+  color: var(--text);
+  background-color: var(--ink-0);
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: 'ss01', 'cv11';
+  color-scheme: dark;
 }
 
 *,
@@ -21,24 +66,57 @@
   box-sizing: border-box;
 }
 
-body {
+html, body {
   margin: 0;
   min-height: 100vh;
-  background: radial-gradient(circle at top, #fff6f7, transparent 55%),
-    linear-gradient(120deg, #f9c6cc, #f2f2f2 45%, #ffffff);
   color: inherit;
+  background: #03000a;
+}
+
+body {
+  overflow-x: hidden;
 }
 
 #root {
   min-height: 100vh;
+  position: relative;
+  z-index: 1;
+}
+
+h1, h2, h3, h4 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+
+h1 {
+  letter-spacing: -0.032em;
 }
 
 button,
 input,
 textarea {
   font: inherit;
+  color: inherit;
 }
 
 a {
   color: var(--badger-red);
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--badger-gold);
+}
+
+::selection {
+  background: var(--badger-red);
+  color: #fff;
+}
+
+/* Firefox scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 35, 64, 0.35) transparent;
 }

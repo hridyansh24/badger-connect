@@ -1,8 +1,9 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { FormEvent } from 'react'
-import type { UserProfile } from '../types'
-import uwLogo from '../assets/uw-logo.webp'
+import { useAuth } from '../context/AuthContext'
+import { requestCode } from '../lib/api'
+import BrandMark from '../components/BrandMark'
 
 const suggestedInterests = [
   'Badger Athletics',
@@ -18,7 +19,6 @@ const suggestedInterests = [
 ]
 
 type LoginPageProps = {
-  onAuthenticated: (profile: UserProfile) => void
   bannedInterests: string[]
   loadingBannedList: boolean
 }
@@ -31,17 +31,16 @@ const normalizeInterest = (value: string) =>
     .map((chunk) => chunk.charAt(0).toUpperCase() + chunk.slice(1).toLowerCase())
     .join(' ')
 
-const LoginPage = ({
-  onAuthenticated,
-  bannedInterests,
-  loadingBannedList,
-}: LoginPageProps) => {
+const LoginPage = ({ bannedInterests, loadingBannedList }: LoginPageProps) => {
   const navigate = useNavigate()
+  const { setPending } = useAuth()
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [selectedInterests, setSelectedInterests] = useState<string[]>([])
   const [newInterest, setNewInterest] = useState('')
   const [error, setError] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [agreed, setAgreed] = useState(false)
 
   const availableInterests = useMemo(() => suggestedInterests, [])
 
@@ -56,9 +55,7 @@ const LoginPage = ({
   const handleAddInterest = () => {
     setError('')
     const normalized = normalizeInterest(newInterest)
-    if (!normalized) {
-      return
-    }
+    if (!normalized) return
 
     const lower = normalized.toLowerCase()
     const violates = bannedInterests.some((entry) => lower.includes(entry))
@@ -73,7 +70,7 @@ const LoginPage = ({
     setNewInterest('')
   }
 
-  const handleSubmit = (event: FormEvent) => {
+  const handleSubmit = async (event: FormEvent) => {
     event.preventDefault()
     setError('')
 
@@ -90,14 +87,21 @@ const LoginPage = ({
       return
     }
 
-    const profile: UserProfile = {
-      name: trimmedName,
-      email: trimmedEmail,
-      interests: selectedInterests,
+    if (!agreed) {
+      setError('Please confirm the community guidelines before continuing.')
+      return
     }
 
-    onAuthenticated(profile)
-    navigate('/mode')
+    setSubmitting(true)
+    try {
+      await requestCode({ name: trimmedName, email: trimmedEmail })
+      setPending({ name: trimmedName, email: trimmedEmail, interests: selectedInterests })
+      navigate('/verify')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not send the code. Try again.')
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   return (
@@ -105,11 +109,11 @@ const LoginPage = ({
       <div className="page-card login-card">
         <header className="page-header">
           <div className="brand-lockup">
-            <p className="eyebrow">University of Wisconsin–Madison</p>
-            <img src={uwLogo} alt="University of Wisconsin crest" className="uw-logo" />
+            <BrandMark className="brand-mark" title="Badger Connect" />
+            <p className="eyebrow">For UW–Madison students</p>
           </div>
           <h1>Badger Connect</h1>
-          <p className="subtitle">Fellow Badgers! Let&apos;s meet some cool ahh badgers.</p>
+          <p className="subtitle">Meet verified Badgers. Text or video, no setup required.</p>
         </header>
 
         <form className="login-form" onSubmit={handleSubmit}>
@@ -120,6 +124,7 @@ const LoginPage = ({
               value={name}
               onChange={(event) => setName(event.target.value)}
               placeholder="Jane Badger"
+              autoComplete="name"
               required
             />
           </label>
@@ -132,6 +137,7 @@ const LoginPage = ({
               onChange={(event) => setEmail(event.target.value)}
               placeholder="netid@wisc.edu"
               inputMode="email"
+              autoComplete="email"
               required
             />
           </label>
@@ -195,11 +201,30 @@ const LoginPage = ({
             )}
           </div>
 
+          <label className={`consent${agreed ? ' checked' : ''}`}>
+            <input
+              type="checkbox"
+              checked={agreed}
+              onChange={(event) => setAgreed(event.target.checked)}
+              required
+            />
+            <span className="consent-box" aria-hidden />
+            <span className="consent-text">
+              I&apos;m <strong>18 or older</strong> and I agree not to engage in nudity, sexual
+              content, or harassment. Violations are auto-banned and may be reported to the UW
+              Dean of Students.
+            </span>
+          </label>
+
           {error && <p className="form-error">{error}</p>}
 
-          <button type="submit" className="primary">
-            Enter the lounge
+          <button type="submit" className="primary" disabled={submitting || !agreed}>
+            {submitting ? 'Sending code…' : 'Send verification code'}
           </button>
+
+          <p className="fine-print">
+            We&apos;ll email a 6-digit code to your @wisc.edu inbox. It expires in 10 minutes.
+          </p>
         </form>
       </div>
     </div>

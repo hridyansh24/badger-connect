@@ -1,3 +1,4 @@
+import type { PointerEvent as ReactPointerEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { ChatMode, UserProfile } from '../types'
 
@@ -36,6 +37,12 @@ const ModeSelectionPage = ({ user, onSelectMode, onLogout }: ModeSelectionPagePr
   const handleSelect = (mode: ChatMode) => {
     onSelectMode(mode)
     navigate(mode === 'text' ? '/chat/text' : '/chat/video')
+  }
+
+  const handleCardPointer = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect()
+    event.currentTarget.style.setProperty('--card-mx', `${event.clientX - rect.left}px`)
+    event.currentTarget.style.setProperty('--card-my', `${event.clientY - rect.top}px`)
   }
 
   return (
@@ -81,6 +88,7 @@ const ModeSelectionPage = ({ user, onSelectMode, onLogout }: ModeSelectionPagePr
               className="mode-card"
               type="button"
               onClick={() => handleSelect(mode.id)}
+              onPointerMove={handleCardPointer}
             >
               <span className="pill floating">{mode.badge}</span>
               <h2>{mode.title}</h2>

@@ -23,8 +23,8 @@ const defaultReputation: ProfileReputation = {
   banned: false,
 }
 
-const REPORT_THRESHOLD = 3
-const DISLIKE_THRESHOLD = 10
+const REPORT_THRESHOLD = 2
+const DISLIKE_THRESHOLD = 6
 
 const FeedbackContext = createContext<FeedbackContextValue | undefined>(undefined)
 

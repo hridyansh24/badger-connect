@@ -1,50 +1,37 @@
+require('dotenv').config()
+
 const express = require('express')
 const http = require('http')
 const cors = require('cors')
 const { Server } = require('socket.io')
 const { v4: uuidv4 } = require('uuid')
-require('dotenv').config()
+
+const authRouter = require('./routes/auth')
+const { verifyToken } = require('./lib/auth')
+const {
+  getReputation,
+  applyReaction,
+  upsertUser,
+  flagUserAuto,
+  hardBanUser,
+} = require('./lib/reputation')
+const { moderateText } = require('./lib/moderation')
+const { logSessionStart, logSessionEnd } = require('./lib/sessions')
 
 const PORT = process.env.PORT || 4000
-const CLIENT_ORIGINS = process.env.CLIENT_ORIGIN?.split(',').map((origin) => origin.trim()) ?? [
-  'http://localhost:5173',
-]
-
-const REPORT_THRESHOLD = 3
-const DISLIKE_THRESHOLD = 10
+const CLIENT_ORIGINS = process.env.CLIENT_ORIGIN?.split(',').map((o) =>
+  o.trim(),
+) ?? ['http://localhost:5173']
 
 const app = express()
 app.use(cors({ origin: CLIENT_ORIGINS }))
 app.use(express.json())
 
-const reputations = new Map()
-const waitingQueues = {
-  text: [],
-  video: [],
-}
+app.use('/auth', authRouter)
+
+const waitingQueues = { text: [], video: [] }
 const sessions = new Map()
 const emailToSockets = new Map()
-
-const getReputation = (email = '') => {
-  if (!email) {
-    return { likes: 0, dislikes: 0, reports: 0, banned: false }
-  }
-  if (!reputations.has(email)) {
-    reputations.set(email, { likes: 0, dislikes: 0, reports: 0, banned: false })
-  }
-  return reputations.get(email)
-}
-
-const applyReaction = (email, type) => {
-  const profile = getReputation(email)
-  if (type === 'like') profile.likes += 1
-  if (type === 'dislike') profile.dislikes += 1
-  if (type === 'report') profile.reports += 1
-  if (profile.reports >= REPORT_THRESHOLD || profile.dislikes >= DISLIKE_THRESHOLD) {
-    profile.banned = true
-  }
-  return profile
-}
 
 const sanitizeProfile = (profile = {}) => ({
   name: profile.name || 'Unknown Badger',
@@ -55,78 +42,97 @@ const sanitizeProfile = (profile = {}) => ({
 const registerSocketForEmail = (socketId, email) => {
   if (!email) return
   const normalized = email.toLowerCase()
-  if (!emailToSockets.has(normalized)) {
-    emailToSockets.set(normalized, new Set())
-  }
+  if (!emailToSockets.has(normalized)) emailToSockets.set(normalized, new Set())
   emailToSockets.get(normalized).add(socketId)
 }
 
 const unregisterSocket = (socketId) => {
   for (const [email, sockets] of emailToSockets.entries()) {
     sockets.delete(socketId)
-    if (sockets.size === 0) {
-      emailToSockets.delete(email)
-    }
+    if (sockets.size === 0) emailToSockets.delete(email)
   }
 }
 
 const removeFromQueues = (socketId) => {
   Object.keys(waitingQueues).forEach((mode) => {
-    waitingQueues[mode] = waitingQueues[mode].filter((entry) => entry.socketId !== socketId)
+    waitingQueues[mode] = waitingQueues[mode].filter(
+      (entry) => entry.socketId !== socketId,
+    )
   })
 }
 
 const findSessionBySocket = (socketId) => {
   for (const [sessionId, session] of sessions.entries()) {
-    if (session.participants.includes(socketId)) {
-      return { sessionId, session }
-    }
+    if (session.participants.includes(socketId)) return { sessionId, session }
   }
   return null
 }
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', waiting: Object.fromEntries(Object.entries(waitingQueues).map(([mode, list]) => [mode, list.length])) })
+  res.json({
+    status: 'ok',
+    waiting: Object.fromEntries(
+      Object.entries(waitingQueues).map(([mode, list]) => [mode, list.length]),
+    ),
+    sessions: sessions.size,
+  })
 })
 
-app.get('/reputation/:email', (req, res) => {
-  const { email } = req.params
-  res.json(getReputation(email.toLowerCase()))
+app.get('/reputation/:email', async (req, res) => {
+  const rep = await getReputation(req.params.email.toLowerCase())
+  res.json(rep)
 })
 
 const httpServer = http.createServer(app)
 const io = new Server(httpServer, {
-  cors: {
-    origin: CLIENT_ORIGINS,
-    methods: ['GET', 'POST'],
-  },
+  cors: { origin: CLIENT_ORIGINS, methods: ['GET', 'POST'] },
+})
+
+// Require a valid JWT on every socket connection. Reject otherwise.
+io.use((socket, next) => {
+  const token = socket.handshake.auth?.token
+  if (!token) return next(new Error('Missing auth token'))
+  try {
+    const decoded = verifyToken(token)
+    socket.data.user = { email: decoded.email, name: decoded.name }
+    next()
+  } catch (err) {
+    next(new Error('Invalid or expired auth token'))
+  }
 })
 
 io.on('connection', (socket) => {
+  const authedUser = socket.data.user
   socket.data.profile = null
   socket.data.mode = null
 
-  socket.on('profile:update', (profile = {}) => {
-    const normalizedEmail = (profile.email || '').toLowerCase()
-    socket.data.profile = { ...profile, email: normalizedEmail }
-    registerSocketForEmail(socket.id, normalizedEmail)
-    const rep = getReputation(normalizedEmail)
-    if (rep.banned) {
-      socket.emit('system:banned', rep)
+  socket.on('profile:update', async (profile = {}) => {
+    // Email in the JWT is the source of truth. Ignore whatever the client sent.
+    const email = authedUser.email
+    const name = (profile.name || authedUser.name || '').trim() || 'Badger'
+    const interests = Array.isArray(profile.interests) ? profile.interests : []
+    socket.data.profile = { name, email, interests }
+    registerSocketForEmail(socket.id, email)
+
+    try {
+      await upsertUser({ email, name, interests })
+    } catch (err) {
+      console.error('profile:update upsert error', err)
     }
+
+    const rep = await getReputation(email)
+    if (rep.banned) socket.emit('system:banned', rep)
     socket.emit('profile:reputation', rep)
   })
 
-  socket.on('match:request', ({ mode }) => {
-    if (!mode || !waitingQueues[mode]) {
-      return
-    }
+  socket.on('match:request', async ({ mode }) => {
+    if (!mode || !waitingQueues[mode]) return
     const profile = socket.data.profile
     if (!profile) {
       socket.emit('system:error', 'Profile missing. Please log in again.')
       return
     }
-    const rep = getReputation(profile.email)
+    const rep = await getReputation(profile.email)
     if (rep.banned) {
       socket.emit('system:banned', rep)
       return
@@ -134,17 +140,50 @@ io.on('connection', (socket) => {
     removeFromQueues(socket.id)
     socket.data.mode = mode
     waitingQueues[mode].push({ socketId: socket.id })
-    socket.emit('match:queued', { mode, queueLength: waitingQueues[mode].length })
+    socket.emit('match:queued', {
+      mode,
+      queueLength: waitingQueues[mode].length,
+    })
     attemptPair(mode)
   })
 
-  socket.on('chat:text:message', ({ sessionId, body, from }) => {
+  socket.on('chat:text:message', async ({ sessionId, body }) => {
     if (!sessionId || !body) return
     const session = sessions.get(sessionId)
-    if (!session) return
-    if (!session.participants.includes(socket.id)) return
+    if (!session || !session.participants.includes(socket.id)) return
     const targetId = session.participants.find((id) => id !== socket.id)
     if (!targetId) return
+    const from = socket.data.profile?.email || socket.data.user.email
+
+    const verdict = await moderateText(body)
+    if (!verdict.allowed) {
+      socket.emit('system:warning', {
+        sessionId,
+        reason: verdict.reason,
+        severity: verdict.severity,
+        message:
+          verdict.severity === 'critical'
+            ? 'Your message violated our policy and your account has been banned.'
+            : 'That message was blocked by our content filter. Keep chats respectful.',
+      })
+
+      if (verdict.severity === 'critical') {
+        await hardBanUser(from, verdict.reason)
+        const sockets = emailToSockets.get(from)
+        sockets?.forEach((sid) =>
+          io.to(sid).emit('system:banned', { banned: true, reason: verdict.reason }),
+        )
+        endSession(sessionId, socket.id, { flaggedReason: verdict.reason })
+      } else {
+        const rep = await flagUserAuto(from, verdict.reason)
+        if (rep?.banned) {
+          socket.emit('system:banned', rep)
+          endSession(sessionId, socket.id, { flaggedReason: verdict.reason })
+        }
+      }
+      return
+    }
+
     io.to(targetId).emit('chat:text:message', {
       sessionId,
       body,
@@ -158,20 +197,36 @@ io.on('connection', (socket) => {
       endSession(sessionId, socket.id)
     } else {
       const lookup = findSessionBySocket(socket.id)
-      if (lookup) {
-        endSession(lookup.sessionId, socket.id)
-      }
+      if (lookup) endSession(lookup.sessionId, socket.id)
     }
     removeFromQueues(socket.id)
   })
 
-  socket.on('profile:reaction', ({ target, type }) => {
+  socket.on('profile:reaction', async ({ target, type }) => {
     if (!target || !type) return
-    const normalized = target.toLowerCase()
-    const rep = applyReaction(normalized, type)
-    io.emit('profile:reputation', { email: normalized, ...rep })
+    const targetEmail = String(target).toLowerCase()
+    const reporterEmail = socket.data.user.email
+
+    // Only allow reacting to a partner you're actually paired with right now.
+    const sessionLookup = findSessionBySocket(socket.id)
+    if (!sessionLookup) return
+    const partnerId = sessionLookup.session.participants.find(
+      (id) => id !== socket.id,
+    )
+    const partnerSocket = partnerId && io.sockets.sockets.get(partnerId)
+    if (!partnerSocket || partnerSocket.data.user?.email !== targetEmail) return
+
+    const rep = await applyReaction({
+      reporterEmail,
+      targetEmail,
+      type,
+      sessionId: sessionLookup.sessionId,
+    })
+    if (!rep) return
+
+    io.emit('profile:reputation', { email: targetEmail, ...rep })
     if (rep.banned) {
-      const sockets = emailToSockets.get(normalized)
+      const sockets = emailToSockets.get(targetEmail)
       sockets?.forEach((socketId) => {
         io.to(socketId).emit('system:banned', rep)
       })
@@ -180,25 +235,32 @@ io.on('connection', (socket) => {
 
   socket.on('webrtc:offer', ({ sessionId, description }) => {
     if (!sessionId || !description) return
-    relayToSessionPeer(sessionId, socket.id, 'webrtc:offer', { sessionId, description })
+    relayToSessionPeer(sessionId, socket.id, 'webrtc:offer', {
+      sessionId,
+      description,
+    })
   })
 
   socket.on('webrtc:answer', ({ sessionId, description }) => {
     if (!sessionId || !description) return
-    relayToSessionPeer(sessionId, socket.id, 'webrtc:answer', { sessionId, description })
+    relayToSessionPeer(sessionId, socket.id, 'webrtc:answer', {
+      sessionId,
+      description,
+    })
   })
 
   socket.on('webrtc:ice-candidate', ({ sessionId, candidate }) => {
     if (!sessionId || typeof candidate === 'undefined') return
-    relayToSessionPeer(sessionId, socket.id, 'webrtc:ice-candidate', { sessionId, candidate })
+    relayToSessionPeer(sessionId, socket.id, 'webrtc:ice-candidate', {
+      sessionId,
+      candidate,
+    })
   })
 
   socket.on('disconnect', () => {
     removeFromQueues(socket.id)
     const existing = findSessionBySocket(socket.id)
-    if (existing) {
-      endSession(existing.sessionId, socket.id)
-    }
+    if (existing) endSession(existing.sessionId, socket.id)
     unregisterSocket(socket.id)
   })
 })
@@ -210,16 +272,29 @@ function attemptPair(mode) {
     const second = queue.shift()
     const firstSocket = io.sockets.sockets.get(first.socketId)
     const secondSocket = io.sockets.sockets.get(second.socketId)
-    if (!firstSocket || !secondSocket) {
-      continue
-    }
+    if (!firstSocket || !secondSocket) continue
+
     const sessionId = uuidv4()
+    const firstEmail = firstSocket.data.profile?.email || firstSocket.data.user?.email
+    const secondEmail = secondSocket.data.profile?.email || secondSocket.data.user?.email
     sessions.set(sessionId, {
       id: sessionId,
       mode,
       participants: [first.socketId, second.socketId],
+      emails: { [first.socketId]: firstEmail, [second.socketId]: secondEmail },
       startedAt: Date.now(),
     })
+
+    // Fire-and-forget audit log
+    if (firstEmail && secondEmail) {
+      logSessionStart({
+        sessionId,
+        mode,
+        userA: firstEmail,
+        userB: secondEmail,
+      }).catch((err) => console.error('logSessionStart', err))
+    }
+
     const profileA = sanitizeProfile(secondSocket.data.profile)
     const profileB = sanitizeProfile(firstSocket.data.profile)
     firstSocket.emit('match:paired', {
@@ -237,10 +312,18 @@ function attemptPair(mode) {
   }
 }
 
-function endSession(sessionId, leaverId) {
+function endSession(sessionId, leaverId, options = {}) {
   const session = sessions.get(sessionId)
   if (!session) return
   sessions.delete(sessionId)
+
+  const endedByEmail = leaverId ? session.emails?.[leaverId] ?? null : null
+  logSessionEnd({
+    sessionId,
+    endedBy: endedByEmail,
+    flaggedReason: options.flaggedReason,
+  }).catch((err) => console.error('logSessionEnd', err))
+
   session.participants.forEach((participantId) => {
     const participantSocket = io.sockets.sockets.get(participantId)
     if (!participantSocket) return
@@ -254,8 +337,7 @@ function endSession(sessionId, leaverId) {
 
 function relayToSessionPeer(sessionId, senderId, event, payload) {
   const session = sessions.get(sessionId)
-  if (!session) return
-  if (!session.participants.includes(senderId)) return
+  if (!session || !session.participants.includes(senderId)) return
   const targetId = session.participants.find((id) => id !== senderId)
   if (!targetId) return
   io.to(targetId).emit(event, payload)

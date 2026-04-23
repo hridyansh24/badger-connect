@@ -5,15 +5,18 @@ import './index.css'
 import App from './App.tsx'
 import { FeedbackProvider } from './context/FeedbackContext.tsx'
 import { SocketProvider } from './context/SocketContext.tsx'
+import { AuthProvider } from './context/AuthContext.tsx'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <BrowserRouter>
-      <SocketProvider>
-        <FeedbackProvider>
-          <App />
-        </FeedbackProvider>
-      </SocketProvider>
+      <AuthProvider>
+        <SocketProvider>
+          <FeedbackProvider>
+            <App />
+          </FeedbackProvider>
+        </SocketProvider>
+      </AuthProvider>
     </BrowserRouter>
   </StrictMode>,
 )
